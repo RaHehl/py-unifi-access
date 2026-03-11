@@ -23,6 +23,7 @@ _BACKOFF_FACTOR = 2
 _WS_HEARTBEAT = 30
 
 WsMessageHandler = Callable[[WebsocketMessage], Coroutine[Any, Any, None] | None]
+WsRawMessageHandler = Callable[[dict[str, Any]], Coroutine[Any, Any, None] | None]
 
 
 class UnifiAccessWebsocket:
@@ -38,6 +39,7 @@ class UnifiAccessWebsocket:
         *,
         on_connect: Callable[[], Any] | None = None,
         on_disconnect: Callable[[], Any] | None = None,
+        on_raw_message: WsRawMessageHandler | None = None,
         reconnect_interval: int = _BACKOFF_MIN,
         max_retries: int | None = None,
     ) -> None:
@@ -50,6 +52,7 @@ class UnifiAccessWebsocket:
         self._message_handlers = message_handlers
         self._on_connect = on_connect
         self._on_disconnect = on_disconnect
+        self._on_raw_message = on_raw_message
         self._reconnect_interval = reconnect_interval
         self._max_retries = max_retries
         self._task: asyncio.Task[None] | None = None
@@ -105,6 +108,8 @@ class UnifiAccessWebsocket:
         if not isinstance(raw, dict):
             _LOGGER.debug("Ignoring non-dict websocket payload: %s", type(raw).__name__)
             return
+
+        await self._invoke(self._on_raw_message, raw)
 
         parsed = create_from_unifi_dict(raw)
         event = parsed.event or ""

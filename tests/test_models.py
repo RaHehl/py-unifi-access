@@ -391,6 +391,7 @@ class TestV2DeviceUpdate:
                         "is_unavailable": False,
                     }
                 ],
+                "cap": ["unlock_failure_limit", "lock", "two_factor_auth"],
                 "category": ["hub"],
             },
             "meta": {
@@ -403,6 +404,7 @@ class TestV2DeviceUpdate:
         assert isinstance(msg, V2DeviceUpdate)
         assert msg.data.alias == "Front Hub"
         assert msg.data.online is True
+        assert msg.data.cap == ["unlock_failure_limit", "lock", "two_factor_auth"]
         assert len(msg.data.location_states) == 1
         assert msg.data.location_states[0].location_id == "loc-1"
         assert msg.data.location_states[0].lock == "unlocked"

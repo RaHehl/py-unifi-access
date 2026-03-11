@@ -9,7 +9,7 @@ import signal
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -294,51 +294,114 @@ def listen(
         0, "--duration", "-d", help="Seconds to listen (0 = indefinite)"
     ),
     output: str | None = typer.Option(
-        None, "--output", "-o", help="Write events as JSON array to file"
+        None,
+        "--output",
+        "-o",
+        help="Basename for output files (default: events_<datetime>)",
+    ),
+    raw_file: str | None = typer.Option(
+        None, "--raw-file", help="Override path for raw JSONL output"
+    ),
+    parsed_file: str | None = typer.Option(
+        None, "--parsed-file", help="Override path for parsed JSONL output"
+    ),
+    no_save: bool = typer.Option(
+        False, "--no-save", help="Disable writing output files"
     ),
 ) -> None:
-    """Listen to real-time websocket events."""
+    """Listen to real-time websocket events.
+
+    By default writes two JSONL files:
+      events_<datetime>_raw.jsonl    — every raw event (before parsing)
+      events_<datetime>_parsed.jsonl — successfully parsed events
+
+    Use -o to set a custom basename, --raw-file / --parsed-file to override
+    individual paths, or --no-save to disable file output entirely.
+    """
 
     async def _task() -> None:
         stop_event = asyncio.Event()
-        events: list[dict[str, Any]] = []
+        raw_count = 0
+        parsed_count = 0
+
+        # Resolve output paths (always write unless --no-save)
+        if no_save:
+            rf = None
+            pf = None
+        else:
+            ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            basename = output or f"events_{ts}"
+            rf = raw_file or f"{basename}_raw.jsonl"
+            pf = parsed_file or f"{basename}_parsed.jsonl"
 
         loop = asyncio.get_running_loop()
         with contextlib.suppress(NotImplementedError):  # Windows
             loop.add_signal_handler(signal.SIGINT, stop_event.set)
 
-        async with _connect(ctx.obj) as client:
+        raw_out = open(rf, "a", encoding="utf-8") if rf else None  # noqa: SIM115
+        parsed_out = open(pf, "a", encoding="utf-8") if pf else None  # noqa: SIM115
+        try:
+            async with _connect(ctx.obj) as client:
 
-            def on_message(msg: WebsocketMessage) -> None:
-                dump = msg.model_dump()
-                if output:
-                    events.append(dump)
-                typer.echo(json.dumps(dump, indent=2, ensure_ascii=False))
+                def on_raw(raw: dict[str, Any]) -> None:
+                    nonlocal raw_count
+                    if raw_out:
+                        raw_out.write(
+                            json.dumps(raw, ensure_ascii=False) + "\n"
+                        )
+                        raw_out.flush()
+                        raw_count += 1
 
-            handlers: dict[str, Any] = {"*": on_message}
-            client.start_websocket(
-                handlers,
-                on_connect=lambda: typer.secho("Websocket connected", fg="green"),
-                on_disconnect=lambda: typer.secho(
-                    "Websocket disconnected", fg="yellow"
-                ),
+                def on_message(msg: WebsocketMessage) -> None:
+                    nonlocal parsed_count
+                    dump = msg.model_dump()
+                    if parsed_out:
+                        parsed_out.write(
+                            json.dumps(dump, ensure_ascii=False) + "\n"
+                        )
+                        parsed_out.flush()
+                        parsed_count += 1
+                    typer.echo(json.dumps(dump, indent=2, ensure_ascii=False))
+
+                handlers: dict[str, Any] = {"*": on_message}
+                client.start_websocket(
+                    handlers,
+                    on_connect=lambda: typer.secho(
+                        "Websocket connected", fg="green"
+                    ),
+                    on_disconnect=lambda: typer.secho(
+                        "Websocket disconnected", fg="yellow"
+                    ),
+                    on_raw_message=on_raw,
+                )
+
+                if rf:
+                    typer.secho(f"Raw events  -> {rf}", fg="cyan")
+                    typer.secho(f"Parsed events -> {pf}", fg="cyan")
+                typer.echo("Listening for events... (Ctrl+C to stop)")
+
+                if duration > 0:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(stop_event.wait(), timeout=duration)
+                else:
+                    await stop_event.wait()
+        finally:
+            if raw_out:
+                raw_out.close()
+            if parsed_out:
+                parsed_out.close()
+
+        if rf:
+            typer.secho(
+                f"\n{raw_count} raw / {parsed_count} parsed events written",
+                fg="green",
             )
-
-            typer.echo("Listening for events... (Ctrl+C to stop)")
-
-            if duration > 0:
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(stop_event.wait(), timeout=duration)
-            else:
-                await stop_event.wait()
-
-        if output and events:
-            Path(output).write_text(
-                json.dumps(events, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-            typer.secho(f"\n{len(events)} events written to {output}", fg="green")
-        elif output:
-            typer.secho("\nNo events captured, nothing written.", fg="yellow")
+            if raw_count > parsed_count:
+                typer.secho(
+                    f"  {raw_count - parsed_count} event(s) failed to parse "
+                    f"— check {rf} for raw data",
+                    fg="yellow",
+                )
         else:
             typer.echo("\nStopped.")
 

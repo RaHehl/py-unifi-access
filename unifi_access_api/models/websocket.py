@@ -394,7 +394,7 @@ class V2DeviceUpdateData(BaseModel, frozen=True):
     start_time: int = 0
     hw_type: str = ""
     revision: str = ""
-    cap: dict[str, Any] | None = None
+    cap: list[str] | None = None
     location_states: list[V2DeviceLocationState] = []
     category: list[str] = []
 

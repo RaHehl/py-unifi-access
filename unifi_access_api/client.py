@@ -36,7 +36,7 @@ from .models.door import (
     DoorLockRuleStatus,
     EmergencyStatus,
 )
-from .websocket import UnifiAccessWebsocket, WsMessageHandler
+from .websocket import UnifiAccessWebsocket, WsMessageHandler, WsRawMessageHandler
 
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T", bound=BaseModel)
@@ -288,6 +288,7 @@ class UnifiAccessApiClient:
         *,
         on_connect: Callable[[], Any] | None = None,
         on_disconnect: Callable[[], Any] | None = None,
+        on_raw_message: WsRawMessageHandler | None = None,
         reconnect_interval: int = 1,
         max_retries: int | None = None,
     ) -> UnifiAccessWebsocket:
@@ -307,6 +308,7 @@ class UnifiAccessApiClient:
             message_handlers=message_handlers,
             on_connect=on_connect,
             on_disconnect=on_disconnect,
+            on_raw_message=on_raw_message,
             reconnect_interval=reconnect_interval,
             max_retries=max_retries,
         )
