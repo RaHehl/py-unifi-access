@@ -42,7 +42,8 @@ class WsDoorLockRuleStatus(BaseModel, frozen=True):
     model_config = {"extra": "allow"}
 
     def to_door_lock_rule_status(self) -> DoorLockRuleStatus:
-        """Convert to a ``DoorLockRuleStatus`` suitable for storing on a ``Door``.
+        """
+        Convert to a ``DoorLockRuleStatus`` suitable for storing on a ``Door``.
 
         Maps ``until`` (websocket expiry timestamp) to ``ended_time`` (REST API
         field), making the otherwise implicit field correspondence explicit.
