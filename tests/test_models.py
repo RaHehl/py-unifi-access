@@ -78,6 +78,128 @@ class TestNormalizeName:
 
 
 # ---------------------------------------------------------------------------
+# Door extras flattening
+# ---------------------------------------------------------------------------
+
+
+class TestDoorExtrasFlattening:
+    def test_door_with_extras_flattened(self) -> None:
+        """Test that extras.door_thumbnail is flattened onto Door."""
+        door = Door.model_validate(
+            {
+                "id": "door-001",
+                "name": "Front Door",
+                "extras": {
+                    "door_thumbnail": "/preview/thumb.png",
+                    "door_thumbnail_last_update": 1700000000,
+                },
+            }
+        )
+        assert door.door_thumbnail == "/preview/thumb.png"
+        assert door.door_thumbnail_last_update == 1700000000
+
+    def test_door_without_extras(self) -> None:
+        """Test that Door without extras has None thumbnails."""
+        door = Door.model_validate(
+            {
+                "id": "door-001",
+                "name": "Front Door",
+            }
+        )
+        assert door.door_thumbnail is None
+        assert door.door_thumbnail_last_update is None
+
+    def test_door_with_empty_extras(self) -> None:
+        """Test that Door with empty extras has None thumbnails."""
+        door = Door.model_validate(
+            {
+                "id": "door-001",
+                "name": "Front Door",
+                "extras": {},
+            }
+        )
+        assert door.door_thumbnail is None
+        assert door.door_thumbnail_last_update is None
+
+    def test_extras_does_not_mutate_input(self) -> None:
+        """Validator must not mutate the caller's dict."""
+        raw: dict[str, Any] = {
+            "id": "door-001",
+            "name": "Front Door",
+            "extras": {"door_thumbnail": "/preview/thumb.png"},
+        }
+        Door.model_validate(raw)
+        assert "extras" in raw
+
+    def test_round_trip_with_thumbnail(self) -> None:
+        """model_dump → model_validate must preserve thumbnail fields."""
+        door = Door.model_validate(
+            {
+                "id": "door-001",
+                "name": "Front Door",
+                "extras": {
+                    "door_thumbnail": "/preview/thumb.png",
+                    "door_thumbnail_last_update": 1700000000,
+                },
+            }
+        )
+        restored = Door.model_validate(door.model_dump())
+        assert restored == door
+        assert restored.door_thumbnail == "/preview/thumb.png"
+        assert restored.door_thumbnail_last_update == 1700000000
+
+    def test_with_updates_preserves_thumbnail(self) -> None:
+        """with_updates on non-thumbnail field must keep thumbnail."""
+        door = Door.model_validate(
+            {
+                "id": "door-001",
+                "name": "Front Door",
+                "extras": {
+                    "door_thumbnail": "/preview/thumb.png",
+                    "door_thumbnail_last_update": 1700000000,
+                },
+            }
+        )
+        updated = door.with_updates(
+            door_lock_relay_status=DoorLockRelayStatus.UNLOCK,
+        )
+        assert updated.door_thumbnail == "/preview/thumb.png"
+        assert updated.door_thumbnail_last_update == 1700000000
+
+    def test_with_updates_can_set_thumbnail(self) -> None:
+        """with_updates can set thumbnail on a door that had none."""
+        door = Door.model_validate({"id": "door-001", "name": "Front Door"})
+        updated = door.with_updates(door_thumbnail="/preview/new.png")
+        assert updated.door_thumbnail == "/preview/new.png"
+
+    def test_extras_none_ignored(self) -> None:
+        """extras: None is safely ignored."""
+        door = Door.model_validate(
+            {"id": "door-001", "name": "Front Door", "extras": None}
+        )
+        assert door.door_thumbnail is None
+
+    def test_extras_non_dict_ignored(self) -> None:
+        """extras with a non-dict value (e.g. string) is safely ignored."""
+        door = Door.model_validate(
+            {"id": "door-001", "name": "Front Door", "extras": "unexpected"}
+        )
+        assert door.door_thumbnail is None
+
+    def test_explicit_top_level_wins_over_extras(self) -> None:
+        """Explicit top-level door_thumbnail beats extras value."""
+        door = Door.model_validate(
+            {
+                "id": "door-001",
+                "name": "Front Door",
+                "door_thumbnail": "/preview/explicit.png",
+                "extras": {"door_thumbnail": "/preview/extras.png"},
+            }
+        )
+        assert door.door_thumbnail == "/preview/explicit.png"
+
+
+# ---------------------------------------------------------------------------
 # DoorLockRule.model_dump(exclude_unset=True) — used by client
 # ---------------------------------------------------------------------------
 
@@ -438,9 +560,7 @@ class TestLogSourceDeviceConfig:
         assert dc.display_name == "entry"
 
     def test_returns_none_when_absent(self) -> None:
-        source = LogSource.model_validate(
-            {"target": [{"type": "door", "id": "d1"}]}
-        )
+        source = LogSource.model_validate({"target": [{"type": "door", "id": "d1"}]})
         assert source.device_config is None
 
     def test_returns_none_for_empty_targets(self) -> None:
@@ -543,6 +663,20 @@ class TestV2DeviceUpdate:
         assert ls.remain_lock.until == 1773200000
         assert ls.remain_unlock is None
 
+    def test_category_none(self) -> None:
+        """category=None should not raise a validation error (#167128)."""
+        raw: dict[str, Any] = {
+            "event": "access.data.v2.device.update",
+            "data": {
+                "id": "abc123",
+                "device_type": "UA-G6-Pro-Entry",
+                "category": None,
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, V2DeviceUpdate)
+        assert msg.data.category is None
+
 
 # ---------------------------------------------------------------------------
 # New event models — access.logs.insights.add
@@ -583,11 +717,12 @@ class TestInsightsAdd:
         assert msg.data.result == "ACCESS"
         assert msg.data.event_type == "access.door.unlock"
         assert msg.data.message == "Access Granted (Face)"
-        # Typed access — no dict digging needed in HA
+        # Scalar fields
         assert msg.data.metadata.actor.display_name == "Test User"
         assert msg.data.metadata.actor.type == "user"
-        assert msg.data.metadata.door.display_name == "Front Door"
         assert msg.data.metadata.authentication.display_name == "FACE"
+        # Target fields (lists, single dict coerced to one-element list)
+        assert msg.data.metadata.door[0].display_name == "Front Door"
 
     def test_empty_metadata_defaults(self) -> None:
         """Missing metadata entries default to empty InsightsMetadataEntry."""
@@ -602,7 +737,7 @@ class TestInsightsAdd:
         msg = create_from_unifi_dict(raw)
         assert isinstance(msg, InsightsAdd)
         assert msg.data.metadata.actor.display_name == ""
-        assert msg.data.metadata.door.id == ""
+        assert msg.data.metadata.door == []
 
     def test_extra_metadata_fields_preserved(self) -> None:
         """Unknown metadata keys are preserved via extra=allow."""
@@ -619,6 +754,81 @@ class TestInsightsAdd:
         msg = create_from_unifi_dict(raw)
         assert isinstance(msg, InsightsAdd)
         assert msg.data.metadata.actor.display_name == "Admin"
+
+    def test_device_as_list(self) -> None:
+        """Device arriving as a list of dicts is preserved as-is."""
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "data": {
+                "result": "ACCESS",
+                "metadata": {
+                    "device": [
+                        {
+                            "id": "dev-1",
+                            "type": "UA-G2-Pro",
+                            "display_name": "Front Hub",
+                            "alternate_name": "guid",
+                        },
+                    ],
+                    "actor": {
+                        "id": "user-1",
+                        "type": "user",
+                        "display_name": "Jon",
+                    },
+                },
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert len(msg.data.metadata.device) == 1
+        assert msg.data.metadata.device[0].id == "dev-1"
+        assert msg.data.metadata.device[0].display_name == "Front Hub"
+        # Scalar actor remains a single entry
+        assert msg.data.metadata.actor.display_name == "Jon"
+
+    def test_door_as_single_dict_coerced_to_list(self) -> None:
+        """A single-dict target field is coerced into a one-element list."""
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "data": {
+                "result": "ACCESS",
+                "metadata": {
+                    "door": {
+                        "id": "door-1",
+                        "type": "door",
+                        "display_name": "Front Door",
+                    },
+                },
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert len(msg.data.metadata.door) == 1
+        assert msg.data.metadata.door[0].display_name == "Front Door"
+
+    def test_multiple_targets_same_type(self) -> None:
+        """Multiple targets of the same type are preserved as a list."""
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "data": {
+                "result": "ACCESS",
+                "metadata": {
+                    "device": [
+                        {"id": "dev-1", "type": "UA-Hub", "display_name": "Hub A"},
+                        {
+                            "id": "dev-2",
+                            "type": "UA-Reader",
+                            "display_name": "Reader B",
+                        },
+                    ],
+                },
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert len(msg.data.metadata.device) == 2
+        assert msg.data.metadata.device[0].display_name == "Hub A"
+        assert msg.data.metadata.device[1].display_name == "Reader B"
 
 
 # ---------------------------------------------------------------------------
