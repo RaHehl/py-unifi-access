@@ -71,7 +71,10 @@ unifi-access -H 192.168.1.1 -t <TOKEN> --no-verify-ssl listen -d 60
 ```
 
 Trigger the action you want to inspect (e.g. an access request) during the
-capture window, then share the `events_*_raw.jsonl` file when reporting an issue.
+capture window, then review the `events_*_raw.jsonl` file before sharing it
+when reporting an issue. Raw payloads may contain sensitive data such as
+tokens or identifiers (for example MAC addresses and device/user names), so
+please redact secrets/identifiers first or share the file privately if needed.
 
 ## Development
 
