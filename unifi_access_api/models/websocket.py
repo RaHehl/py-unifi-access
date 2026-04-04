@@ -421,7 +421,7 @@ class V2DeviceUpdateData(BaseModel, frozen=True):
     revision: str = ""
     cap: list[str] | None = None
     location_states: list[V2DeviceLocationState] = []
-    category: list[str] = []
+    category: list[str] | None = None
 
     model_config = {"extra": "allow"}
 

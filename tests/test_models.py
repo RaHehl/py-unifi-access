@@ -663,6 +663,20 @@ class TestV2DeviceUpdate:
         assert ls.remain_lock.until == 1773200000
         assert ls.remain_unlock is None
 
+    def test_category_none(self) -> None:
+        """category=None should not raise a validation error (#167128)."""
+        raw: dict[str, Any] = {
+            "event": "access.data.v2.device.update",
+            "data": {
+                "id": "abc123",
+                "device_type": "UA-G6-Pro-Entry",
+                "category": None,
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, V2DeviceUpdate)
+        assert msg.data.category is None
+
 
 # ---------------------------------------------------------------------------
 # New event models — access.logs.insights.add
