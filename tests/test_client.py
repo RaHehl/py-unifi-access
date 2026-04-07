@@ -51,6 +51,11 @@ class TestClientInit:
         assert client._host == f"https://192.168.1.1:{UNIFI_ACCESS_API_PORT}"
         assert client._ws_host == f"wss://192.168.1.1:{UNIFI_ACCESS_API_PORT}"
 
+    def test_ipv6_host_brackets_urls(self, mock_session: AsyncMock) -> None:
+        client = UnifiAccessApiClient("[::1]", "tok", mock_session)
+        assert client._host == f"https://[::1]:{UNIFI_ACCESS_API_PORT}"
+        assert client._ws_host == f"wss://[::1]:{UNIFI_ACCESS_API_PORT}"
+
     def test_host_with_scheme(self, mock_session: AsyncMock) -> None:
         client = UnifiAccessApiClient("https://192.168.1.1", "tok", mock_session)
         assert client._host == f"https://192.168.1.1:{UNIFI_ACCESS_API_PORT}"
