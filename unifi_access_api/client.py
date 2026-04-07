@@ -82,7 +82,6 @@ class UnifiAccessApiClient:
         hostname = parsed.hostname
         if not hostname:
             raise ValueError(f"Invalid host: {host!r}")
-        self._hostname = hostname
         self._url_host = f"[{hostname}]" if ":" in hostname else hostname
         port = parsed.port or UNIFI_ACCESS_API_PORT
 
@@ -183,7 +182,7 @@ class UnifiAccessApiClient:
         with HTTP 200, meaning the key is valid for Protect and was likely
         created in the wrong application.
 
-        Any network or parsing error is silently caught and returns False.
+        Any network or request error is silently caught and returns False.
         """
         url = f"https://{self._url_host}{PROTECT_META_INFO_URL}"
         headers = {
