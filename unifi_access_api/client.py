@@ -18,6 +18,7 @@ from .const import (
     DOOR_UNLOCK_URL,
     DOORS_EMERGENCY_URL,
     DOORS_URL,
+    PROTECT_META_INFO_URL,
     STATIC_URL,
     UNIFI_ACCESS_API_PORT,
 )
@@ -81,12 +82,14 @@ class UnifiAccessApiClient:
         hostname = parsed.hostname
         if not hostname:
             raise ValueError(f"Invalid host: {host!r}")
+        self._hostname = hostname
         port = parsed.port or UNIFI_ACCESS_API_PORT
 
         self._host = f"https://{hostname}:{port}"
         self._ws_host = f"wss://{hostname}:{port}"
         self._session = session
         self._request_timeout = aiohttp.ClientTimeout(total=request_timeout)
+        self._api_token = api_token
         self._auth_header = f"Bearer {api_token}"
 
         self._http_headers: dict[str, str] = {
@@ -169,6 +172,37 @@ class UnifiAccessApiClient:
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
+
+    async def is_protect_api_key(self) -> bool:
+        """
+        Check whether the API token belongs to UniFi Protect.
+
+        Makes a best-effort GET request to the Protect meta-info endpoint
+        on the same host (port 443). Returns True if the endpoint responds
+        with HTTP 200, meaning the key is valid for Protect and was likely
+        created in the wrong application.
+
+        Any network or parsing error is silently caught and returns False.
+        """
+        # Re-bracket IPv6 addresses for a valid URL (urlparse strips brackets).
+        host = f"[{self._hostname}]" if ":" in self._hostname else self._hostname
+        url = f"https://{host}{PROTECT_META_INFO_URL}"
+        headers = {
+            "X-API-KEY": self._api_token,
+            "Accept": "application/json",
+        }
+        _LOGGER.debug("Checking if API token belongs to UniFi Protect at %s", url)
+        try:
+            async with self._session.request(
+                "GET",
+                url,
+                headers=headers,
+                ssl=self._ssl_context,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                return resp.status == 200
+        except (TimeoutError, aiohttp.ClientError, OSError):
+            return False
 
     async def authenticate(self) -> None:
         """

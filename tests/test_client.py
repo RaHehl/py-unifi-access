@@ -311,6 +311,73 @@ class TestAuthenticate:
 
 
 # ---------------------------------------------------------------------------
+# is_protect_api_key
+# ---------------------------------------------------------------------------
+
+
+class TestIsProtectApiKey:
+    async def test_returns_true_on_200(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request = MagicMock(
+            return_value=make_mock_response(status=200, json_data={"version": "1.0"})
+        )
+        assert await api_client.is_protect_api_key() is True
+
+    async def test_returns_false_on_401(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request = MagicMock(return_value=make_mock_response(status=401))
+        assert await api_client.is_protect_api_key() is False
+
+    async def test_returns_false_on_connection_error(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(side_effect=aiohttp.ClientConnectionError())
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session.request = MagicMock(return_value=ctx)
+        assert await api_client.is_protect_api_key() is False
+
+    async def test_returns_false_on_timeout(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(side_effect=TimeoutError())
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session.request = MagicMock(return_value=ctx)
+        assert await api_client.is_protect_api_key() is False
+
+    async def test_uses_port_443_and_protect_headers(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request = MagicMock(
+            return_value=make_mock_response(status=200, json_data={})
+        )
+        await api_client.is_protect_api_key()
+        call_args = mock_session.request.call_args
+        url = call_args[1]["url"] if "url" in call_args[1] else call_args[0][1]
+        assert "192.168.1.1" in url
+        assert ":12445" not in url
+        assert "/proxy/protect/integration/v1/meta/info" in url
+        headers = (
+            call_args[1]["headers"] if "headers" in call_args[1] else call_args[0][2]
+        )
+        assert "X-API-KEY" in headers
+        assert headers["X-API-KEY"] == "test-api-token"
+
+    async def test_ipv6_host_brackets(self, mock_session: AsyncMock) -> None:
+        client = UnifiAccessApiClient("[::1]", "tok", mock_session, verify_ssl=False)
+        mock_session.request = MagicMock(
+            return_value=make_mock_response(status=200, json_data={})
+        )
+        await client.is_protect_api_key()
+        call_args = mock_session.request.call_args
+        url = call_args[1]["url"] if "url" in call_args[1] else call_args[0][1]
+        assert "https://[::1]/" in url
+
+
+# ---------------------------------------------------------------------------
 # _check_status — specific exception subclasses
 # ---------------------------------------------------------------------------
 
