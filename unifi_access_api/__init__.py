@@ -12,6 +12,7 @@ from .exceptions import (
     UnifiAccessError,
 )
 from .models.door import (
+    Device,
     Door,
     DoorLockRelayStatus,
     DoorLockRule,
@@ -77,6 +78,7 @@ __all__ = [
     "ApiSSLError",
     "BaseInfo",
     "BaseInfoData",
+    "Device",
     "DeviceUpdate",
     "DeviceUpdateData",
     "DeviceUpdateDoor",

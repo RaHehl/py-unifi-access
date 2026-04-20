@@ -20,6 +20,8 @@ class WebsocketMessage(BaseModel, frozen=True):
     """Generic websocket message."""
 
     event: str | None = None
+    event_object_id: str = ""
+    door_id: str = ""
 
     model_config = {"extra": "allow"}
 
@@ -193,6 +195,7 @@ class LogActor(BaseModel, frozen=True):
 class LogEvent(BaseModel, frozen=True):
     """Event details in an access log."""
 
+    type: str = ""
     result: str = ""
 
     model_config = {"extra": "allow"}
@@ -441,6 +444,8 @@ _TARGET_FIELDS: frozenset[str] = frozenset(
         "door",
         "building",
         "camera",
+        "camera_capture",
+        "reader_capture",
         "policy",
         "opened_method",
         "opened_direction",
@@ -474,6 +479,8 @@ class InsightsMetadata(BaseModel, frozen=True):
     door: list[InsightsMetadataEntry] = []
     building: list[InsightsMetadataEntry] = []
     camera: list[InsightsMetadataEntry] = []
+    camera_capture: list[InsightsMetadataEntry] = []
+    reader_capture: list[InsightsMetadataEntry] = []
     policy: list[InsightsMetadataEntry] = []
     opened_method: list[InsightsMetadataEntry] = []
     opened_direction: list[InsightsMetadataEntry] = []

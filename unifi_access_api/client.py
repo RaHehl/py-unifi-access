@@ -6,6 +6,7 @@ import logging
 import ssl
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from inspect import isawaitable
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 
 from .const import (
     DEVICE_NOTIFICATIONS_URL,
+    DEVICES_URL,
     DOOR_LOCK_RULE_URL,
     DOOR_UNLOCK_URL,
     DOORS_EMERGENCY_URL,
@@ -32,11 +34,13 @@ from .exceptions import (
     ApiSSLError,
 )
 from .models.door import (
+    Device,
     Door,
     DoorLockRule,
     DoorLockRuleStatus,
     EmergencyStatus,
 )
+from .models.websocket import WebsocketMessage
 from .websocket import UnifiAccessWebsocket, WsMessageHandler, WsRawMessageHandler
 
 _LOGGER = logging.getLogger(__name__)
@@ -118,6 +122,7 @@ class UnifiAccessApiClient:
             )
 
         self._websocket: UnifiAccessWebsocket | None = None
+        self._device_door_map: dict[str, str] | None = None
 
     def _url(self, path: str) -> str:
         """Build a full API URL from a path."""
@@ -168,6 +173,7 @@ class UnifiAccessApiClient:
         if self._websocket is not None:
             await self._websocket.stop()
             self._websocket = None
+        self._device_door_map = None
 
     # ------------------------------------------------------------------
     # Authentication
@@ -218,6 +224,49 @@ class UnifiAccessApiClient:
     async def get_doors(self) -> list[Door]:
         """Fetch all doors."""
         return await self._request_list(Door, self._url(DOORS_URL))
+
+    async def get_devices(self) -> list[Device]:
+        """
+        Fetch all devices.
+
+        The API returns devices grouped by location (door).  This method
+        flattens the groups into a single list.
+        """
+        raw = await self._request(self._url(DEVICES_URL))
+        return [Device.model_validate(dev) for group in raw for dev in group]
+
+    async def get_device_door_map(self, *, refresh: bool = False) -> dict[str, str]:
+        """
+        Return a cached device-MAC to door-UUID mapping.
+
+        Fetches the devices list on the first call and caches the result.
+        Pass ``refresh=True`` to force a re-fetch (e.g. after a
+        ``access.data.v2.device.update`` event).
+        """
+        if self._device_door_map is None or refresh:
+            devices = await self.get_devices()
+            self._device_door_map = {
+                dev.id: dev.location_id for dev in devices if dev.location_id
+            }
+        return self._device_door_map
+
+    def resolve_door_id(self, device_mac: str) -> str | None:
+        """
+        Look up a door UUID by device MAC from the cached device map.
+
+        Returns *None* if the map has not been populated yet (call
+        :meth:`get_device_door_map` first) or the MAC is unknown.
+        """
+        if self._device_door_map is None:
+            return None
+        return self._device_door_map.get(device_mac)
+
+    def _enrich_ws_message(self, msg: WebsocketMessage) -> WebsocketMessage:
+        """Attach ``door_id`` to a websocket message from the cached map."""
+        door_id = self.resolve_door_id(msg.event_object_id)
+        if door_id:
+            return msg.model_copy(update={"door_id": door_id})
+        return msg
 
     async def unlock_door(
         self,
@@ -332,15 +381,26 @@ class UnifiAccessApiClient:
         if self._websocket is not None and self._websocket.is_running:
             return self._websocket
 
+        user_on_connect = on_connect
+
+        async def _on_ws_connect() -> None:
+            """Populate the device→door cache, then invoke the user callback."""
+            await self.get_device_door_map(refresh=True)
+            if user_on_connect is not None:
+                result = user_on_connect()
+                if isawaitable(result):
+                    await result
+
         self._websocket = UnifiAccessWebsocket(
             uri=f"{self._ws_host}{DEVICE_NOTIFICATIONS_URL}",
             headers=self._ws_headers,
             ssl_context=self._ssl_context,
             session=self._session,
             message_handlers=message_handlers,
-            on_connect=on_connect,
+            on_connect=_on_ws_connect,
             on_disconnect=on_disconnect,
             on_raw_message=on_raw_message,
+            message_enricher=self._enrich_ws_message,
             reconnect_interval=reconnect_interval,
             max_retries=max_retries,
         )

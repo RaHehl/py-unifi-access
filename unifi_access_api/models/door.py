@@ -70,6 +70,22 @@ class EmergencyStatus(BaseModel, frozen=True):
     lockdown: bool = False
 
 
+class Device(BaseModel, frozen=True):
+    """Single device as returned by the UniFi Access devices endpoint."""
+
+    id: str
+    type: str = ""
+    name: str = ""
+    alias: str = ""
+    location_id: str = ""
+    connected_uah_id: str = ""
+    is_online: bool = False
+    is_adopted: bool = False
+    is_managed: bool = False
+
+    model_config = {"extra": "allow"}
+
+
 class Door(BaseModel, frozen=True):
     """Single door as returned by the UniFi Access API."""
 
