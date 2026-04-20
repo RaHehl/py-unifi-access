@@ -801,6 +801,24 @@ class TestStartWebsocket:
 
         assert calls == [1]
 
+    async def test_on_connect_swallows_device_map_errors(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        """A failing device map refresh must not kill the WS loop."""
+        mock_session.request.side_effect = RuntimeError("API down")
+        user_cb = AsyncMock()
+        with patch("unifi_access_api.client.UnifiAccessWebsocket") as mock_ws_cls:
+            mock_ws = MagicMock()
+            mock_ws.is_running = False
+            mock_ws_cls.return_value = mock_ws
+            api_client.start_websocket({}, on_connect=user_cb)
+            on_connect = mock_ws_cls.call_args[1]["on_connect"]
+            # Must not raise
+            await on_connect()
+
+        # User callback must still be invoked
+        user_cb.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Context manager
@@ -952,6 +970,21 @@ class TestDeviceDoorMap:
         )
         result = await api_client.get_device_door_map()
         assert result == {"ccdd": "door-1"}
+
+    async def test_returns_copy_not_internal_cache(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        """Callers must not be able to mutate the internal cache."""
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        result = await api_client.get_device_door_map()
+        with pytest.raises(TypeError):
+            result["evil"] = "hacked"  # type: ignore[index]
+        # Cache untouched
+        second = await api_client.get_device_door_map()
+        assert "evil" not in second
+        assert second["aabbccddeeff"] == "door-uuid-1"
 
 
 class TestResolveDoorId:

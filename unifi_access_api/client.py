@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import ssl
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from inspect import isawaitable
+from types import MappingProxyType
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 
@@ -235,7 +236,7 @@ class UnifiAccessApiClient:
         raw = await self._request(self._url(DEVICES_URL))
         return [Device.model_validate(dev) for group in raw for dev in group]
 
-    async def get_device_door_map(self, *, refresh: bool = False) -> dict[str, str]:
+    async def get_device_door_map(self, *, refresh: bool = False) -> Mapping[str, str]:
         """
         Return a cached device-MAC to door-UUID mapping.
 
@@ -248,7 +249,7 @@ class UnifiAccessApiClient:
             self._device_door_map = {
                 dev.id: dev.location_id for dev in devices if dev.location_id
             }
-        return self._device_door_map
+        return MappingProxyType(self._device_door_map)
 
     def resolve_door_id(self, device_mac: str) -> str | None:
         """
@@ -384,8 +385,19 @@ class UnifiAccessApiClient:
         user_on_connect = on_connect
 
         async def _on_ws_connect() -> None:
-            """Populate the device→door cache, then invoke the user callback."""
-            await self.get_device_door_map(refresh=True)
+            """
+            Populate the device→door cache, then invoke the user callback.
+
+            Errors fetching the device map are logged but do not propagate,
+            so a transient API failure cannot terminate the websocket loop.
+            """
+            try:
+                await self.get_device_door_map(refresh=True)
+            except Exception:
+                _LOGGER.exception(
+                    "Failed to refresh device→door map on WS connect; "
+                    "door_id enrichment may be stale"
+                )
             if user_on_connect is not None:
                 result = user_on_connect()
                 if isawaitable(result):
