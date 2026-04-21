@@ -215,6 +215,65 @@ class TestHandleMessage:
         )
         assert captured == ["access.hw.door_bell"]
 
+    async def test_enricher_called_before_dispatch(self) -> None:
+        """message_enricher runs before the handler sees the message."""
+        from unifi_access_api.models.websocket import WebsocketMessage
+
+        def enricher(msg: WebsocketMessage) -> WebsocketMessage:
+            return msg.model_copy(update={"door_id": "enriched-door"})
+
+        handler = AsyncMock()
+        ws = UnifiAccessWebsocket(
+            uri="wss://host/ws",
+            headers={},
+            ssl_context=False,
+            session=AsyncMock(spec=aiohttp.ClientSession),
+            message_handlers={"access.logs.add": handler},
+            message_enricher=enricher,
+        )
+        await ws._handle_message(
+            json.dumps(
+                {
+                    "event": "access.logs.add",
+                    "event_object_id": "aabbccddeeff",
+                    "data": {
+                        "_source": {
+                            "actor": {},
+                            "event": {},
+                            "authentication": {},
+                            "target": [],
+                        }
+                    },
+                }
+            )
+        )
+        handler.assert_awaited_once()
+        msg = handler.call_args[0][0]
+        assert msg.door_id == "enriched-door"
+        assert msg.event_object_id == "aabbccddeeff"
+
+    async def test_no_enricher_leaves_door_id_empty(self) -> None:
+        handler = AsyncMock()
+        ws = _make_ws(handlers={"access.logs.add": handler})
+        await ws._handle_message(
+            json.dumps(
+                {
+                    "event": "access.logs.add",
+                    "event_object_id": "aabbccddeeff",
+                    "data": {
+                        "_source": {
+                            "actor": {},
+                            "event": {},
+                            "authentication": {},
+                            "target": [],
+                        }
+                    },
+                }
+            )
+        )
+        handler.assert_awaited_once()
+        assert handler.call_args[0][0].door_id == ""
+
 
 # ---------------------------------------------------------------------------
 # _loop (integration-style)

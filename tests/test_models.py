@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from unifi_access_api.models.door import (
+    Device,
     Door,
     DoorLockRelayStatus,
     DoorLockRule,
@@ -19,9 +20,11 @@ from unifi_access_api.models.websocket import (
     _EVENT_MODELS,
     BaseInfo,
     InsightsAdd,
+    InsightsMetadata,
     LocationUpdateLegacy,
     LocationUpdateV2,
     LogAdd,
+    LogEvent,
     LogSource,
     LogTarget,
     V2DeviceUpdate,
@@ -856,3 +859,294 @@ class TestLocationUpdateLegacy:
         assert msg.data.name == "Front Door"
         assert msg.data.full_name == "Building - 1F - Front Door"
         assert msg.data.previous_name == ["Old Name"]
+
+
+# ---------------------------------------------------------------------------
+# WebsocketMessage.event_object_id
+# ---------------------------------------------------------------------------
+
+
+class TestEventObjectId:
+    def test_typed_on_base_message(self) -> None:
+        msg = create_from_unifi_dict(
+            {
+                "event": "access.base.info",
+                "event_object_id": "abc123",
+                "data": {"top_log_count": 1},
+            }
+        )
+        assert msg.event_object_id == "abc123"
+
+    def test_defaults_empty_string(self) -> None:
+        msg = create_from_unifi_dict(
+            {"event": "access.base.info", "data": {"top_log_count": 0}}
+        )
+        assert msg.event_object_id == ""
+
+
+# ---------------------------------------------------------------------------
+# WebsocketMessage.door_id
+# ---------------------------------------------------------------------------
+
+
+class TestDoorId:
+    def test_defaults_empty_string(self) -> None:
+        msg = create_from_unifi_dict(
+            {"event": "access.base.info", "data": {"top_log_count": 0}}
+        )
+        assert msg.door_id == ""
+
+    def test_preserved_via_model_copy(self) -> None:
+        msg = create_from_unifi_dict(
+            {
+                "event": "access.logs.add",
+                "event_object_id": "aabb",
+                "data": {
+                    "_source": {
+                        "actor": {},
+                        "event": {},
+                        "authentication": {},
+                        "target": [],
+                    }
+                },
+            }
+        )
+        enriched = msg.model_copy(update={"door_id": "door-uuid-1"})
+        assert enriched.door_id == "door-uuid-1"
+        assert enriched.event_object_id == "aabb"
+        assert enriched.event == "access.logs.add"
+
+    def test_inherited_by_subclasses(self) -> None:
+        raw: dict[str, Any] = {
+            "event": "access.logs.add",
+            "event_object_id": "112233",
+            "data": {
+                "_source": {
+                    "actor": {},
+                    "event": {},
+                    "authentication": {},
+                    "target": [],
+                }
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, LogAdd)
+        assert msg.door_id == ""
+        enriched = msg.model_copy(update={"door_id": "d1"})
+        assert isinstance(enriched, LogAdd)
+        assert enriched.door_id == "d1"
+
+
+# ---------------------------------------------------------------------------
+# WebsocketMessage.event_object_id (continued)
+# ---------------------------------------------------------------------------
+
+
+class TestEventObjectIdOnSubclasses:
+    def test_accessible_on_log_add(self) -> None:
+        raw: dict[str, Any] = {
+            "event": "access.logs.add",
+            "event_object_id": "112233445566",
+            "data": {
+                "_source": {
+                    "actor": {},
+                    "event": {},
+                    "authentication": {},
+                    "target": [],
+                }
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, LogAdd)
+        assert msg.event_object_id == "112233445566"
+
+    def test_accessible_on_insights_add(self) -> None:
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "event_object_id": "aabbccddeeff",
+            "data": {
+                "event_type": "access.door.unlock",
+                "result": "ACCESS",
+                "metadata": {},
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert msg.event_object_id == "aabbccddeeff"
+
+
+# ---------------------------------------------------------------------------
+# LogEvent.type
+# ---------------------------------------------------------------------------
+
+
+class TestLogEventType:
+    def test_type_parsed(self) -> None:
+        event = LogEvent.model_validate(
+            {"type": "access.door.unlock", "result": "ACCESS"}
+        )
+        assert event.type == "access.door.unlock"
+        assert event.result == "ACCESS"
+
+    def test_type_defaults_empty(self) -> None:
+        event = LogEvent.model_validate({})
+        assert event.type == ""
+
+    def test_type_via_log_add(self) -> None:
+        raw: dict[str, Any] = {
+            "event": "access.logs.add",
+            "event_object_id": "112233445566",
+            "data": {
+                "_source": {
+                    "actor": {"display_name": "Test User"},
+                    "event": {"type": "access.door.unlock", "result": "ACCESS"},
+                    "authentication": {"credential_provider": "NFC"},
+                    "target": [],
+                }
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, LogAdd)
+        assert msg.data.source.event.type == "access.door.unlock"
+
+
+# ---------------------------------------------------------------------------
+# InsightsMetadata.camera_capture
+# ---------------------------------------------------------------------------
+
+
+class TestInsightsMetadataCameraCapture:
+    def test_camera_capture_parsed(self) -> None:
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "event_object_id": "aabbccddeeff",
+            "data": {
+                "event_type": "access.door.unlock",
+                "result": "ACCESS",
+                "metadata": {
+                    "actor": {"display_name": "Test User"},
+                    "authentication": {"display_name": "NFC"},
+                    "camera": {
+                        "id": "cafebabe12345678abcd0000",
+                        "type": "camera",
+                        "display_name": "Test Door A - Entry",
+                    },
+                    "camera_capture": {
+                        "id": "protect_699_abc",
+                        "type": "camera_capture",
+                        "display_name": "Test Door A - Entry",
+                    },
+                },
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert len(msg.data.metadata.camera) == 1
+        assert msg.data.metadata.camera[0].id == "cafebabe12345678abcd0000"
+        assert len(msg.data.metadata.camera_capture) == 1
+        assert msg.data.metadata.camera_capture[0].id == "protect_699_abc"
+
+    def test_no_camera_on_uah_door(self) -> None:
+        """UAH-DOOR without linked camera has empty camera and camera_capture."""
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "event_object_id": "112233445566",
+            "data": {
+                "event_type": "access.door.unlock",
+                "result": "ACCESS",
+                "metadata": {
+                    "actor": {"display_name": "Test User"},
+                    "authentication": {"display_name": "NFC"},
+                    "device": [
+                        {
+                            "id": "112233445566",
+                            "type": "UAH-DOOR",
+                            "display_name": "UA Hub Door",
+                        }
+                    ],
+                },
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert msg.data.metadata.camera == []
+        assert msg.data.metadata.camera_capture == []
+
+
+# ---------------------------------------------------------------------------
+# Device model
+# ---------------------------------------------------------------------------
+
+
+class TestDevice:
+    def test_basic_device(self) -> None:
+        dev = Device.model_validate(
+            {
+                "id": "aabbccddeeff",
+                "type": "UA-Hub-Door-Mini",
+                "name": "UA Hub Door Mini AABB",
+                "alias": "Test Door A",
+                "location_id": "03665403-763f-4658-a056-336794d9114d",
+                "connected_uah_id": "aabbccddeeff",
+                "is_online": True,
+                "is_adopted": True,
+                "is_managed": True,
+            }
+        )
+        assert dev.id == "aabbccddeeff"
+        assert dev.type == "UA-Hub-Door-Mini"
+        assert dev.location_id == "03665403-763f-4658-a056-336794d9114d"
+        assert dev.is_online is True
+
+    def test_extra_fields_allowed(self) -> None:
+        dev = Device.model_validate({"id": "abc", "capabilities": ["ssh_change"]})
+        assert dev.id == "abc"
+        assert dev.model_extra["capabilities"] == ["ssh_change"]
+
+    def test_defaults(self) -> None:
+        dev = Device.model_validate({"id": "abc"})
+        assert dev.type == ""
+        assert dev.location_id == ""
+        assert dev.is_online is False
+
+
+# ---------------------------------------------------------------------------
+# InsightsMetadata.reader_capture
+# ---------------------------------------------------------------------------
+
+
+class TestInsightsMetadataReaderCapture:
+    def test_reader_capture_parsed(self) -> None:
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "event_object_id": "aabbccddeeff",
+            "data": {
+                "event_type": "access.door.unlock",
+                "result": "ACCESS",
+                "metadata": {
+                    "actor": {"display_name": "Test User"},
+                    "authentication": {"display_name": "NFC"},
+                    "reader_capture": {
+                        "id": "protect_699_abc",
+                        "type": "reader_capture",
+                        "display_name": "Test Door A",
+                        "video_source": "protect",
+                    },
+                },
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert len(msg.data.metadata.reader_capture) == 1
+        assert msg.data.metadata.reader_capture[0].id == "protect_699_abc"
+        assert msg.data.metadata.reader_capture[0].type == "reader_capture"
+
+    def test_no_reader_capture_on_uah_door(self) -> None:
+        meta = InsightsMetadata.model_validate(
+            {
+                "actor": {"display_name": "Test"},
+                "authentication": {"display_name": "NFC"},
+                "device": [{"id": "112233445566", "type": "UAH-DOOR"}],
+            }
+        )
+        assert meta.reader_capture == []

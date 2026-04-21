@@ -10,6 +10,7 @@ import pytest
 from unifi_access_api.client import UnifiAccessApiClient, _map_exceptions
 from unifi_access_api.const import (
     DEVICE_NOTIFICATIONS_URL,
+    DEVICES_URL,
     DOORS_URL,
     STATIC_URL,
     UNIFI_ACCESS_API_PORT,
@@ -24,6 +25,7 @@ from unifi_access_api.exceptions import (
     ApiSSLError,
 )
 from unifi_access_api.models.door import (
+    Device,
     Door,
     DoorLockRule,
     DoorLockRuleStatus,
@@ -39,6 +41,20 @@ from .conftest import (
     _make_success_response,
     make_mock_response,
 )
+
+SAMPLE_DEVICE_GROUPS = [
+    [
+        {
+            "id": "aabbccddeeff",
+            "type": "UA-Hub-Door-Mini",
+            "location_id": "door-uuid-1",
+        },
+        {"id": "ffeeddccbbaa", "type": "UA-G3-Flex", "location_id": "door-uuid-1"},
+    ],
+    [
+        {"id": "112233445566", "type": "UAH-DOOR", "location_id": "door-uuid-2"},
+    ],
+]
 
 # ---------------------------------------------------------------------------
 # Constructor / host parsing
@@ -717,6 +733,92 @@ class TestStartWebsocket:
             assert DEVICE_NOTIFICATIONS_URL in call_kwargs["uri"]
             assert call_kwargs["uri"].startswith("wss://")
 
+    def test_passes_message_enricher(self, api_client: UnifiAccessApiClient) -> None:
+        with patch("unifi_access_api.client.UnifiAccessWebsocket") as mock_ws_cls:
+            mock_ws = MagicMock()
+            mock_ws.is_running = False
+            mock_ws_cls.return_value = mock_ws
+            api_client.start_websocket({})
+            call_kwargs = mock_ws_cls.call_args[1]
+            enricher = call_kwargs["message_enricher"]
+            assert enricher.__func__ is UnifiAccessApiClient._enrich_ws_message
+            assert enricher.__self__ is api_client
+
+    async def test_on_connect_populates_device_map(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        """The on_connect wrapper should refresh the device→door cache."""
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        with patch("unifi_access_api.client.UnifiAccessWebsocket") as mock_ws_cls:
+            mock_ws = MagicMock()
+            mock_ws.is_running = False
+            mock_ws_cls.return_value = mock_ws
+            api_client.start_websocket({})
+            on_connect = mock_ws_cls.call_args[1]["on_connect"]
+            await on_connect()
+
+        assert api_client._device_door_map == {
+            "aabbccddeeff": "door-uuid-1",
+            "ffeeddccbbaa": "door-uuid-1",
+            "112233445566": "door-uuid-2",
+        }
+
+    async def test_on_connect_invokes_user_callback(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        """User-supplied on_connect must still be invoked (async)."""
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response([])
+        )
+        user_cb = AsyncMock()
+        with patch("unifi_access_api.client.UnifiAccessWebsocket") as mock_ws_cls:
+            mock_ws = MagicMock()
+            mock_ws.is_running = False
+            mock_ws_cls.return_value = mock_ws
+            api_client.start_websocket({}, on_connect=user_cb)
+            on_connect = mock_ws_cls.call_args[1]["on_connect"]
+            await on_connect()
+
+        user_cb.assert_awaited_once()
+
+    async def test_on_connect_invokes_sync_user_callback(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        """User-supplied on_connect may be a plain (sync) callable."""
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response([])
+        )
+        calls: list[int] = []
+        with patch("unifi_access_api.client.UnifiAccessWebsocket") as mock_ws_cls:
+            mock_ws = MagicMock()
+            mock_ws.is_running = False
+            mock_ws_cls.return_value = mock_ws
+            api_client.start_websocket({}, on_connect=lambda: calls.append(1))
+            on_connect = mock_ws_cls.call_args[1]["on_connect"]
+            await on_connect()
+
+        assert calls == [1]
+
+    async def test_on_connect_swallows_device_map_errors(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        """A failing device map refresh must not kill the WS loop."""
+        mock_session.request.side_effect = RuntimeError("API down")
+        user_cb = AsyncMock()
+        with patch("unifi_access_api.client.UnifiAccessWebsocket") as mock_ws_cls:
+            mock_ws = MagicMock()
+            mock_ws.is_running = False
+            mock_ws_cls.return_value = mock_ws
+            api_client.start_websocket({}, on_connect=user_cb)
+            on_connect = mock_ws_cls.call_args[1]["on_connect"]
+            # Must not raise
+            await on_connect()
+
+        # User callback must still be invoked
+        user_cb.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Context manager
@@ -739,3 +841,218 @@ class TestContextManager:
         self, api_client: UnifiAccessApiClient
     ) -> None:
         await api_client.close()  # should not raise
+
+    async def test_close_clears_device_door_map(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        await api_client.get_device_door_map()
+        assert api_client._device_door_map is not None
+        await api_client.close()
+        assert api_client._device_door_map is None
+
+
+# ---------------------------------------------------------------------------
+# get_devices
+# ---------------------------------------------------------------------------
+
+
+class TestGetDevices:
+    async def test_flattens_device_groups(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        """Devices API returns nested arrays grouped by location; get_devices flattens."""
+        raw_groups = [
+            [
+                {
+                    "id": "aabbccddeeff",
+                    "type": "UA-Hub-Door-Mini",
+                    "location_id": "door-uuid-1",
+                },
+                {
+                    "id": "ffeeddccbbaa",
+                    "type": "UA-G3-Flex",
+                    "location_id": "door-uuid-1",
+                },
+            ],
+            [
+                {
+                    "id": "112233445566",
+                    "type": "UAH-DOOR",
+                    "location_id": "door-uuid-2",
+                },
+            ],
+        ]
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(raw_groups)
+        )
+        devices = await api_client.get_devices()
+        assert len(devices) == 3
+        assert all(isinstance(d, Device) for d in devices)
+        assert devices[0].id == "aabbccddeeff"
+        assert devices[0].location_id == "door-uuid-1"
+        assert devices[2].id == "112233445566"
+        assert devices[2].location_id == "door-uuid-2"
+
+    async def test_uses_devices_url(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response([])
+        )
+        await api_client.get_devices()
+        url = mock_session.request.call_args[0][1]
+        assert DEVICES_URL in url
+
+    async def test_empty_groups(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response([])
+        )
+        devices = await api_client.get_devices()
+        assert devices == []
+
+
+# ---------------------------------------------------------------------------
+# get_device_door_map / resolve_door_id
+# ---------------------------------------------------------------------------
+
+
+class TestDeviceDoorMap:
+    async def test_builds_map_on_first_call(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        result = await api_client.get_device_door_map()
+        assert result == {
+            "aabbccddeeff": "door-uuid-1",
+            "ffeeddccbbaa": "door-uuid-1",
+            "112233445566": "door-uuid-2",
+        }
+
+    async def test_caches_result(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        await api_client.get_device_door_map()
+        await api_client.get_device_door_map()
+        # Only one HTTP call despite two get_device_door_map calls
+        assert mock_session.request.call_count == 1
+
+    async def test_refresh_refetches(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        await api_client.get_device_door_map()
+        await api_client.get_device_door_map(refresh=True)
+        assert mock_session.request.call_count == 2
+
+    async def test_skips_devices_without_location(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        groups = [
+            [
+                {"id": "aabb", "type": "X", "location_id": ""},
+                {"id": "ccdd", "type": "Y", "location_id": "door-1"},
+            ]
+        ]
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(groups)
+        )
+        result = await api_client.get_device_door_map()
+        assert result == {"ccdd": "door-1"}
+
+    async def test_returns_copy_not_internal_cache(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        """Callers must not be able to mutate the internal cache."""
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        result = await api_client.get_device_door_map()
+        with pytest.raises(TypeError):
+            result["evil"] = "hacked"  # type: ignore[index]
+        # Cache untouched
+        second = await api_client.get_device_door_map()
+        assert "evil" not in second
+        assert second["aabbccddeeff"] == "door-uuid-1"
+
+
+class TestResolveDoorId:
+    async def test_returns_door_uuid(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        await api_client.get_device_door_map()
+        assert api_client.resolve_door_id("aabbccddeeff") == "door-uuid-1"
+        assert api_client.resolve_door_id("112233445566") == "door-uuid-2"
+
+    def test_returns_none_before_map_loaded(
+        self, api_client: UnifiAccessApiClient
+    ) -> None:
+        assert api_client.resolve_door_id("aabbccddeeff") is None
+
+    async def test_returns_none_for_unknown_mac(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        await api_client.get_device_door_map()
+        assert api_client.resolve_door_id("000000000000") is None
+
+
+# ---------------------------------------------------------------------------
+# _enrich_ws_message
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichWsMessage:
+    async def test_attaches_door_id(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        from unifi_access_api.models.websocket import WebsocketMessage
+
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        await api_client.get_device_door_map()
+        msg = WebsocketMessage(event="access.logs.add", event_object_id="aabbccddeeff")
+        enriched = api_client._enrich_ws_message(msg)
+        assert enriched.door_id == "door-uuid-1"
+        assert enriched.event_object_id == "aabbccddeeff"
+
+    def test_returns_original_when_map_not_loaded(
+        self, api_client: UnifiAccessApiClient
+    ) -> None:
+        from unifi_access_api.models.websocket import WebsocketMessage
+
+        msg = WebsocketMessage(event="access.logs.add", event_object_id="aabbccddeeff")
+        result = api_client._enrich_ws_message(msg)
+        assert result is msg
+        assert result.door_id == ""
+
+    async def test_returns_original_for_unknown_mac(
+        self, api_client: UnifiAccessApiClient, mock_session: AsyncMock
+    ) -> None:
+        from unifi_access_api.models.websocket import WebsocketMessage
+
+        mock_session.request.return_value = make_mock_response(
+            json_data=_make_success_response(SAMPLE_DEVICE_GROUPS)
+        )
+        await api_client.get_device_door_map()
+        msg = WebsocketMessage(event="access.logs.add", event_object_id="000000000000")
+        result = api_client._enrich_ws_message(msg)
+        assert result is msg
+        assert result.door_id == ""
