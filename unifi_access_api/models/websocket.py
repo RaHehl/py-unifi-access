@@ -224,6 +224,26 @@ class LogSource(BaseModel, frozen=True):
         """Return the first target with type ``device_config``, or *None*."""
         return next((t for t in self.target if t.type == "device_config"), None)
 
+    @property
+    def direction(self) -> str:
+        """
+        Return the passage direction (e.g. ``"entry"`` / ``"exit"``).
+
+        UniFi stores the direction in the target list as a ``device_config``
+        entry with ``id == "door_entry_method"``.  The ``_source.event.direction``
+        field is always sent as an empty string, so this property is the
+        canonical way to read direction from a ``logs.add`` event.
+        """
+        t = next(
+            (
+                t
+                for t in self.target
+                if t.type == "device_config" and t.id == "door_entry_method"
+            ),
+            None,
+        )
+        return t.display_name if t is not None else ""
+
 
 class LogAddData(BaseModel, frozen=True):
     """
@@ -486,6 +506,16 @@ class InsightsMetadata(BaseModel, frozen=True):
     opened_direction: list[InsightsMetadataEntry] = []
 
     model_config = {"extra": "allow"}
+
+    @property
+    def direction(self) -> str:
+        """
+        Return the passage direction (e.g. ``"entry"`` / ``"exit"``).
+
+        Convenience wrapper around ``opened_direction[0].display_name`` so
+        HA automations can use the same attribute name as on ``LogSource``.
+        """
+        return self.opened_direction[0].display_name if self.opened_direction else ""
 
     @model_validator(mode="before")
     @classmethod

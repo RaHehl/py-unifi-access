@@ -290,6 +290,82 @@ class TestCreateFromUnifiDict:
         assert isinstance(msg, LogAdd)
         assert msg.data.source.actor.display_name == "Jane"
 
+    def test_log_event_direction_field_not_typed(self) -> None:
+        """event.direction is not a typed field — real API always sends it empty.
+
+        The canonical way to read direction from a logs.add event is
+        ``msg.data.source.direction`` (LogSource property), not
+        ``msg.data.source.event.direction``.
+        """
+        raw: dict[str, Any] = {
+            "event": "access.logs.add",
+            "data": {
+                "_source": {
+                    "target": [
+                        {
+                            "type": "device_config",
+                            "id": "door_entry_method",
+                            "display_name": "entry",
+                        },
+                    ],
+                    "actor": {"display_name": "Admin"},
+                    "event": {"result": "OK"},
+                }
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, LogAdd)
+        # canonical path
+        assert msg.data.source.direction == "entry"
+        # event sub-object has no typed direction field
+        assert (
+            not hasattr(LogEvent, "direction")
+            or "direction" not in LogEvent.model_fields
+        )
+
+    def test_log_source_direction_from_target(self) -> None:
+        """direction property reads from device_config target (real API pattern)."""
+        raw: dict[str, Any] = {
+            "event": "access.logs.add",
+            "data": {
+                "_source": {
+                    "target": [
+                        {
+                            "type": "device_config",
+                            "id": "door_entry_method",
+                            "display_name": "entry",
+                        },
+                        {"type": "door", "id": "door-1", "display_name": "Front Door"},
+                    ],
+                    "actor": {"display_name": "Raphael"},
+                    "event": {"result": "ACCESS", "direction": ""},
+                }
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, LogAdd)
+        # event.direction is empty (as sent by real API)
+        assert msg.data.source.event.direction == ""
+        # but the property extracts it from the target list
+        assert msg.data.source.direction == "entry"
+
+    def test_log_source_direction_missing(self) -> None:
+        """direction property returns empty string when no device_config target."""
+        raw: dict[str, Any] = {
+            "event": "access.logs.add",
+            "data": {
+                "_source": {
+                    "target": [
+                        {"type": "door", "id": "door-1", "display_name": "Front Door"}
+                    ],
+                    "event": {"result": "ACCESS"},
+                }
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, LogAdd)
+        assert msg.data.source.direction == ""
+
     def test_event_models_inherit_websocket_message(self) -> None:
         """All event models inherit from WebsocketMessage."""
         for cls in _EVENT_MODELS.values():
@@ -832,6 +908,35 @@ class TestInsightsAdd:
         assert len(msg.data.metadata.device) == 2
         assert msg.data.metadata.device[0].display_name == "Hub A"
         assert msg.data.metadata.device[1].display_name == "Reader B"
+
+    def test_insights_metadata_direction_property(self) -> None:
+        """direction property mirrors opened_direction[0].display_name."""
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "data": {
+                "result": "ACCESS",
+                "metadata": {
+                    "opened_direction": {
+                        "id": "door_entry_method",
+                        "type": "device_config",
+                        "display_name": "entry",
+                    },
+                },
+            },
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert msg.data.metadata.direction == "entry"
+
+    def test_insights_metadata_direction_empty(self) -> None:
+        """direction property returns empty string when opened_direction is absent."""
+        raw: dict[str, Any] = {
+            "event": "access.logs.insights.add",
+            "data": {"result": "ACCESS", "metadata": {}},
+        }
+        msg = create_from_unifi_dict(raw)
+        assert isinstance(msg, InsightsAdd)
+        assert msg.data.metadata.direction == ""
 
 
 # ---------------------------------------------------------------------------
